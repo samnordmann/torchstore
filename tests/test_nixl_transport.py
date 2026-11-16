@@ -850,6 +850,37 @@ async def test_abandoned_get_releases_registration_when_volume_answers(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("clear_context", [False, True])
+async def test_cancelled_volume_call_keeps_destination_alive(
+    ctx, monkeypatch, clear_context
+):
+    # Only fake registrations are discarded after this test.
+    monkeypatch.setattr(nixl_transport, "_cancelled_volume_gets", [], raising=False)
+    cache = ctx.get(NixlAgentCache)
+    destination = torch.zeros(4)
+    destination_ref = weakref.ref(destination)
+    cache_ref = weakref.ref(cache)
+    key = cache.acquire(destination)
+    call = asyncio.get_running_loop().create_future()
+    cache.release_when_answered({key}, call, [destination])
+    del destination
+
+    call.cancel()
+    await asyncio.sleep(0)  # Run the completion callback.
+    del call
+    if clear_context:
+        ctx.clear()
+    del cache
+    gc.collect()
+
+    assert destination_ref() is not None
+    assert cache_ref() is not None
+    cache_ref().agent.deregister_memory.assert_not_called()
+    with pytest.raises(RuntimeError, match="has not answered"):
+        cache_ref().acquire(destination_ref())
+
+
+@pytest.mark.asyncio
 async def test_get_cancelled_before_volume_call_releases_registration(ref):
     client_buffer = NixlTransportBuffer(ref)
     destination = torch.zeros(4)
