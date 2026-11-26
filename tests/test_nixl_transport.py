@@ -380,6 +380,38 @@ async def test_get_writes_storage_tensor_into_client_destination(ref, ctx, store
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "scalar", [torch.tensor(2 + 5j).conj(), torch._neg_view(torch.tensor(5.0))]
+)
+async def test_rejects_unresolved_scalar_views(ref, ctx, scalar):
+    client = NixlTransportBuffer(ref)
+    request = Request.from_tensor("weight", scalar)
+    with pytest.raises(ValueError, match="conjugate or negative view bits"):
+        await client._pre_put_hook([request])
+    with pytest.raises(ValueError, match="conjugate or negative view bits"):
+        await client._pre_get_hook([request])
+
+    # Validate before starting a staged write to another destination.
+    matrix = torch.zeros(2, 2)
+    destination = torch.zeros_like(scalar)
+    requests = [
+        Request.from_tensor("matrix", matrix),
+        Request.from_tensor("scalar", destination),
+    ]
+    await client._pre_get_hook(requests)
+    with pytest.raises(ValueError, match="conjugate or negative view bits"):
+        await _storage_volume_copy(client).handle_get_request(
+            ctx,
+            [
+                (requests[0].meta_only(), torch.ones(2, 2).T),
+                (requests[1].meta_only(), scalar),
+            ],
+        )
+    assert matrix.count_nonzero().item() == 0
+    assert destination.item() == 0
+
+
+@pytest.mark.asyncio
 async def test_put_batches_multiple_tensors_in_one_transfer(ref, ctx):
     client_buffer = NixlTransportBuffer(ref)
     sources = [torch.arange(4), torch.arange(4, 8)]
