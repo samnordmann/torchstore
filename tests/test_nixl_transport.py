@@ -135,6 +135,7 @@ class FakeNixlAgent:
     def get_xfer_descs(self, descs, mem_type=None):
         if not isinstance(descs, torch.Tensor):
             return FakeXferDList(descs, mem_type)
+        assert descs.ndim > 0  # Released NIXL bindings index descs[0].
         assert descs.numel() > 0
         descriptor = (descs.data_ptr(), descs.nbytes, self.devices.get(id(descs), 0))
         assert self._registered(
@@ -333,9 +334,11 @@ def test_transport_instantiation_loads_nixl_api(ref, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_put_reads_client_tensor_into_storage_volume(ref, ctx):
+@pytest.mark.parametrize(
+    "source", [torch.arange(8, dtype=torch.float32), torch.tensor(7)]
+)
+async def test_put_reads_client_tensor_into_storage_volume(ref, ctx, source):
     client_buffer = NixlTransportBuffer(ref)
-    source = torch.arange(8, dtype=torch.float32)
     request = Request.from_tensor("weight", source)
 
     assert not client_buffer.requires_handshake([request])
@@ -352,14 +355,16 @@ async def test_put_reads_client_tensor_into_storage_volume(ref, ctx):
 
 
 @pytest.mark.asyncio
-async def test_get_writes_storage_tensor_into_client_destination(ref, ctx):
+@pytest.mark.parametrize(
+    "stored", [torch.arange(8, dtype=torch.float32), torch.tensor(7)]
+)
+async def test_get_writes_storage_tensor_into_client_destination(ref, ctx, stored):
     client_buffer = NixlTransportBuffer(ref)
-    destination = torch.zeros(8)
+    destination = torch.zeros_like(stored)
     request = Request.from_tensor("weight", destination)
 
     await client_buffer._pre_get_hook([request])
     storage_volume_buffer = _storage_volume_copy(client_buffer)
-    stored = torch.arange(8, dtype=torch.float32)
     await storage_volume_buffer.handle_get_request(ctx, [(request.meta_only(), stored)])
     results = await client_buffer._handle_storage_volume_response(
         [request], storage_volume_buffer

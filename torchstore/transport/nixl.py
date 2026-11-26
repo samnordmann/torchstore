@@ -118,6 +118,12 @@ def _staging_pieces(tensor: torch.Tensor, max_bytes: int):
         yield tensor[start : start + rows]
 
 
+def _xfer_descs(agent: Any, tensor: torch.Tensor) -> Any:
+    # NIXL 1.5.x indexes its input before checking for a tensor. Give a scalar
+    # a one-element view for the descriptor. Request metadata keeps its shape.
+    return agent.get_xfer_descs(tensor.unsqueeze(0) if tensor.ndim == 0 else tensor)
+
+
 def _storage_key(tensor: torch.Tensor) -> tuple[int, int]:
     storage = tensor.untyped_storage()
     return storage.data_ptr(), storage.nbytes()
@@ -370,7 +376,7 @@ class NixlTransportBuffer(TransportBuffer):
             cache.register(tensor)
         elif _storage_key(tensor) not in self._leases:
             self._leases.add(cache.acquire(tensor))
-        descriptors = cache.agent.get_xfer_descs(tensor)
+        descriptors = _xfer_descs(cache.agent, tensor)
         context.remote_descriptors = cache.agent.get_serialized_descs(descriptors)
         return context
 
@@ -451,7 +457,7 @@ class NixlTransportBuffer(TransportBuffer):
         try:
             for _, tensor, serialized_remote_descs in transfers:
                 cache.register(tensor)
-                tensor_local_descs = cache.agent.get_xfer_descs(tensor)
+                tensor_local_descs = _xfer_descs(cache.agent, tensor)
                 tensor_remote_descs = cache.agent.deserialize_descs(
                     serialized_remote_descs
                 )
