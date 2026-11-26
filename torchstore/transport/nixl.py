@@ -118,6 +118,17 @@ def _staging_pieces(tensor: torch.Tensor, max_bytes: int):
         yield tensor[start : start + rows]
 
 
+def _descriptor_tensor(tensor: torch.Tensor) -> torch.Tensor:
+    if tensor.ndim != 0:
+        return tensor
+    if tensor.is_conj() or tensor.is_neg():
+        raise ValueError(
+            "NIXL requires scalar tensors without conjugate or negative view bits"
+        )
+    # NIXL 1.5.x indexes its input. Request metadata keeps the scalar shape.
+    return tensor.unsqueeze(0)
+
+
 def _storage_key(tensor: torch.Tensor) -> tuple[int, int]:
     storage = tensor.untyped_storage()
     return storage.data_ptr(), storage.nbytes()
@@ -365,12 +376,13 @@ class NixlTransportBuffer(TransportBuffer):
         if tensor.numel() == 0:
             return context
 
+        descriptor_tensor = _descriptor_tensor(tensor)
         cache = self._client_cache()
         if cached:
             cache.register(tensor)
         elif _storage_key(tensor) not in self._leases:
             self._leases.add(cache.acquire(tensor))
-        descriptors = cache.agent.get_xfer_descs(tensor)
+        descriptors = cache.agent.get_xfer_descs(descriptor_tensor)
         context.remote_descriptors = cache.agent.get_serialized_descs(descriptors)
         return context
 
@@ -579,7 +591,13 @@ class NixlTransportBuffer(TransportBuffer):
             # Empty tensors have no bytes to move or NIXL descriptors to transfer.
             if tensor.numel() != 0:
                 assert request_context.remote_descriptors is not None
-                transfers.append((request, tensor, request_context.remote_descriptors))
+                transfers.append(
+                    (
+                        request,
+                        _descriptor_tensor(tensor),
+                        request_context.remote_descriptors,
+                    )
+                )
             results.append(tensor)
         await self._transfer(ctx, _NixlTransferOperation.READ, transfers)
         return results
@@ -613,7 +631,13 @@ class NixlTransportBuffer(TransportBuffer):
                 continue
             assert request_context.remote_descriptors is not None
             if data.is_contiguous():
-                transfers.append((request, data, request_context.remote_descriptors))
+                transfers.append(
+                    (
+                        request,
+                        _descriptor_tensor(data),
+                        request_context.remote_descriptors,
+                    )
+                )
             elif data.device.type == "cpu":
                 staged.append((request, data, request_context.remote_descriptors))
             else:
